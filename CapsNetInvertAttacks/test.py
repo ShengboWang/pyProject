@@ -200,5 +200,5 @@ def test(epoch):
     return acc
 
 # print("Total accuracy under FGSM attack is", test(1))
+print("Total accuracy under PGD attack is", test(1))
 
-print("123")

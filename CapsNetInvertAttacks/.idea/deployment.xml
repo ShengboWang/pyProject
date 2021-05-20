@@ -1,14 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="wangshengbo@10.147.19.26:22" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
-      <paths name="shnboserver0">
+      <paths name="shnbo198_server">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/pyProjects/CapsNetAttacks" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="shnbo19_server">
         <serverdata>
           <mappings>
             <mapping deploy="/shnboFiles/Capsules-Inverted-Attention-Routing-master" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
+      <paths name="wangshengbo@10.147.19.26:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/data/wangshengbo/pyProjects/CapsNetAttacks" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
     </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
   </component>
 </project>
