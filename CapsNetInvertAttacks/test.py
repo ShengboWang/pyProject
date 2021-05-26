@@ -14,9 +14,11 @@ from src import capsule_model
 # from utils import progress_barv-
 import pickle
 import json
+import numpy as np
 
-from art.attacks.evasion import FastGradientMethod # test acc: 23.64
-from art.attacks.evasion.projected_gradient_descent.projected_gradient_descent_pytorch import ProjectedGradientDescentPyTorch # test acc: 1.52
+from art.attacks.evasion import FastGradientMethod # resnet test acc: 23.64; simple test acc : 17.99
+from art.attacks.evasion.projected_gradient_descent.projected_gradient_descent_pytorch import ProjectedGradientDescentPyTorch # resnet test acc: 1.52; simple test 18.5
+from art.attacks.evasion.carlini import CarliniL2Method
 from art.estimators.classification import PyTorchClassifier
 
 from datetime import datetime
@@ -99,14 +101,16 @@ print("cuda version needed to be",torch.version.cuda, "\n")
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print("device is ",device)
 
+
+# checkpoint = torch.load("results/2021-05-20-13-22-13/ckpt.pth", map_location=device)
 checkpoint = torch.load("results/ckpt.pth", map_location=device)
-# print(checkpoint['acc'])
+print("acc of original is ",checkpoint['acc'],"\n")
 net = torch.nn.DataParallel(net)
 cudnn.benchmark = True
 net.load_state_dict(checkpoint['net'])
 net.eval()
-# for para_tensor in net.state_dict():
-    # print(para_tensor, "\t", net.state_dict()[para_tensor].size())
+for para_tensor in net.state_dict():
+    print(para_tensor, "\t", net.state_dict()[para_tensor].size())
 
 
 transform_test = transforms.Compose([
@@ -119,7 +123,7 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False,
 loss_func = nn.CrossEntropyLoss()
 
 classifier = PyTorchClassifier(
-    model=net.module,
+    model=net,
     # clip_values=
     loss=loss_func,
     # optimizer =
@@ -127,9 +131,9 @@ classifier = PyTorchClassifier(
     nb_classes=10,
 )
 
-attack = FastGradientMethod(estimator=classifier, eps=0.2)
-attack2 = ProjectedGradientDescentPyTorch(estimator=classifier)
-
+# attack = FastGradientMethod(estimator=classifier, eps=0.2, batch_size=100)
+# attack2 = ProjectedGradientDescentPyTorch(estimator=classifier)
+attack3 = CarliniL2Method(classifier=classifier, batch_size=64)
 
 '''
 for batch_idx, (inputs, targets) in enumerate(testloader):
@@ -175,15 +179,18 @@ def test(epoch):
     # with torch.no_grad():
     for batch_idx, (inputs, targets) in enumerate(testloader):
             # print(inputs.size())
-            inputs = attack2.generate(x=inputs)
+            ##inputs = inputs.numpy()
+            ##inputs = np.reshape(inputs, (inputs.shape[0], 3, 32, 32)).astype(np.float32)
+
+            inputs_att = attack3.generate(x=inputs)
             print("batch_idx = ", batch_idx, "\t")
             print("convert successfully!\n")
-            inputs = torch.from_numpy(inputs)
             inputs = inputs.to(device)
             targets = targets.to(device)
+            # inputs = torch.from_numpy(inputs)
 
             # v = net.module(inputs)
-            v = net(inputs)
+            v = net(inputs_att)
 
             loss = loss_func(v, targets)
 
@@ -200,5 +207,5 @@ def test(epoch):
     return acc
 
 # print("Total accuracy under FGSM attack is", test(1))
-print("Total accuracy under PGD attack is", test(1))
-
+# print("Total accuracy under PGD attack is", test(1))
+# print("Total accuracy under Carlini attack is", test(1))

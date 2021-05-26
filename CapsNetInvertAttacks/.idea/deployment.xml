@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="wangshengbo@10.147.19.26:22" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="shnbo@10.147.19.26:22" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
       <paths name="shnbo198_server">
         <serverdata>
@@ -16,10 +16,17 @@
           </mappings>
         </serverdata>
       </paths>
+      <paths name="shnbo@10.147.19.26:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/Projects/CapsNetIvertAttacks" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
       <paths name="wangshengbo@10.147.19.26:22">
         <serverdata>
           <mappings>
-            <mapping deploy="/data/wangshengbo/pyProjects/CapsNetAttacks" local="$PROJECT_DIR$" />
+            <mapping deploy="/pyProjects/CapsNetAttacks" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
