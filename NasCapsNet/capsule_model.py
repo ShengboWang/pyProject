@@ -2,7 +2,7 @@
 # For licensing see accompanying LICENSE file.
 # Copyright (C) 2019 Apple Inc. All Rights Reserved.
 #
-from layers import *
+import layers
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
@@ -25,8 +25,6 @@ class CapsModel(nn.Module):
                  backbone,
                  dp,
                  num_routing,
-                 num_layer,
-                 criterion,
                  sequential_routing=True):
 
         super(CapsModel, self).__init__()
@@ -43,20 +41,26 @@ class CapsModel(nn.Module):
         #### Building Networks
         ## Backbone (before capsule)
         if backbone == 'simple':
-            self.pre_caps = simple_backbone(params['backbone']['input_dim'],
+            self.pre_caps = layers.simple_backbone(params['backbone']['input_dim'],
                                                    params['backbone']['output_dim'],
                                                    params['backbone']['kernel_size'],
                                                    params['backbone']['stride'],
                                                    params['backbone']['padding'])
         elif backbone == 'resnet':
-            self.pre_caps = resnet_backbone(params['backbone']['input_dim'],
+            self.pre_caps = layers.resnet_backbone(params['backbone']['input_dim'],
                                                    params['backbone']['output_dim'],
                                                    params['backbone']['stride'])
-        elif backbone == 'nas':
-            self.pre_caps = NasPreCaps(16, num_layer)
-
-
         ## Primary Capsule Layer (a single CNN)
+        '''
+        "primary_capsules":
+        "kernel_size": 1,
+        "stride": 1,
+        "input_dim": 128,
+        "caps_dim": 16,
+        "num_caps": 32,
+        "padding": 0,
+        "out_img_size": 16
+        '''
         # 张量为batchsize * 128 * 16 * 16
         self.pc_layer = nn.Conv2d(in_channels=params['primary_capsules']['input_dim'],  # 128
                                   out_channels=params['primary_capsules']['num_caps'] * \
@@ -81,7 +85,7 @@ class CapsModel(nn.Module):
                     params['capsules'][i - 1]['caps_dim']
                 # 输入维度为primary输出16或上一层胶囊输出维度
                 self.capsule_layers.append(
-                    CapsuleCONV(in_n_capsules=in_n_caps,
+                    layers.CapsuleCONV(in_n_capsules=in_n_caps,
                                        in_d_capsules=in_d_caps,
                                        out_n_capsules=params['capsules'][i]['num_caps'],
                                        out_d_capsules=params['capsules'][i]['caps_dim'],
@@ -105,7 +109,7 @@ class CapsModel(nn.Module):
                                 params['capsules'][i - 1]['out_img_size']
                     in_d_caps = params['capsules'][i - 1]['caps_dim']
                 self.capsule_layers.append(
-                    CapsuleFC(in_n_capsules=in_n_caps,
+                    layers.CapsuleFC(in_n_capsules=in_n_caps,
                                      in_d_capsules=in_d_caps,
                                      out_n_capsules=params['capsules'][i]['num_caps'],
                                      out_d_capsules=params['capsules'][i]['caps_dim'],
@@ -128,7 +132,7 @@ class CapsModel(nn.Module):
                         params['primary_capsules']['out_img_size']
             in_d_caps = params['primary_capsules']['caps_dim']
         self.capsule_layers.append(
-            CapsuleFC(in_n_capsules=in_n_caps,
+            layers.CapsuleFC(in_n_capsules=in_n_caps,
                              in_d_capsules=in_d_caps,
                              out_n_capsules=params['class_capsules']['num_caps'],
                              out_d_capsules=params['class_capsules']['caps_dim'],

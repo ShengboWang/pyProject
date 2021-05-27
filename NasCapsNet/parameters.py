@@ -2,10 +2,8 @@ import torch
 import torch.nn as nn
 from collections import namedtuple
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-LR = 0.001
-BATCH_SIZE = 32
-NUMBER_OF_TRIALS = 3
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
 
 Genotype = namedtuple('Genotype', 'normal normal_concat reduce reduce_concat')
 
