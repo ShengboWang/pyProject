@@ -5,7 +5,7 @@
       <paths name="shnbo198_remote">
         <serverdata>
           <mappings>
-            <mapping deploy="/data/shnbo/Projects/NasCapsNet" local="$PROJECT_DIR$" />
+            <mapping deploy="/Projects/NasCapsNet" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>

@@ -14,6 +14,7 @@ import numpy as np
 
 #### Simple Backbone ####
 class simple_backbone(nn.Module):
+    # 3, 128, 3, 2, 1
     def __init__(self, cl_input_channels,cl_num_filters,cl_filter_size, 
                                   cl_stride,cl_padding):
         super(simple_backbone, self).__init__()
