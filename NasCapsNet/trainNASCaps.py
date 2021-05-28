@@ -8,38 +8,32 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
-
 import torchvision
 import torchvision.transforms as transforms
 
 import os
 import argparse
-
-from pre_model import *
-from utils import progress_bar
 import pickle
 import json
 
-from datetime import datetime
+import parameters
+from NASCapsModel import *
+from utils import progress_bar
 import logging
 import sys
 
 # +
-parser = argparse.ArgumentParser(description='Training Capsules using Inverted Dot-Product Attention Routing')
-
-parser.add_argument('--resume_dir', '-r', default='', type=str, help='dir where we resume from checkpoint')
+parser = argparse.ArgumentParser(description='Training CapsNet with NAS searched architecture')
 parser.add_argument('--num_routing', default=1, type=int, help='number of routing. Recommended: 0,1,2,3.')
 parser.add_argument('--dataset', default='CIFAR10', type=str, help='dataset. CIFAR10 or CIFAR100.')
 parser.add_argument('--backbone', default='nas', type=str, help='type of backbone. simple, resnet or nas')
 parser.add_argument('--num_workers', default=2, type=int, help='number of workers. 0 or 2')
-parser.add_argument('--config_path', default='pretrainingnet.json', type=str,
+parser.add_argument('--config_path', default='network_paras.json', type=str,
                     help='path of the config')
-parser.add_argument('--save', type=str, default='Pretrain', help='experiment name')
-parser.add_argument('--debug', action='store_true',
-                    help='use debug mode (without saving to a directory)')
+parser.add_argument('--save', type=str, default='train', help='experiment name')
 parser.add_argument('--sequential_routing', action='store_true', help='not using concurrent_routing')
-parser.add_argument('--lr', default=0.1, type=float, help='learning rate. 0.1 for SGD')
-parser.add_argument('--dp', default=0.0, type=float, help='dropout rate')
+parser.add_argument('--lr', default=0.1, type=float, help='learning rate for SGD')
+parser.add_argument('--dp', default=0.2, type=float, help='dropout rate')
 parser.add_argument('--weight_decay', default=5e-4, type=float, help='weight decay')
 parser.add_argument('--train_portion', type=float, default=0.5, help='portion of training data')
 parser.add_argument('--layers', type=int, default=5, help='total number of layers')
@@ -62,14 +56,11 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO,
 fh = logging.FileHandler(os.path.join(args.save, 'log.txt'))
 fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
-
 logging.info("args = %s", args)
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-logging.info("device = %s", device)
 
-best_acc = 0  # best test accuracy
-start_epoch = 0  # start from epoch 0 or last checkpoint epoch
+device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
+logging.info("device = %s", device)
 
 # Data
 print('==> Preparing data..')
@@ -88,27 +79,12 @@ trainset = getattr(torchvision.datasets, args.dataset)(root='../data', train=Tru
                                                        transform=transform_train)
 testset = getattr(torchvision.datasets, args.dataset)(root='../data', train=False, download=True,
                                                       transform=transform_test)
-num_class = int(
-    args.dataset.split('CIFAR')[1])  # 提取出cifar数据集包含的分类数，cifar10为10，cifar100为100；以cifar为分割符，分成若干部分；取第二个，即10或100
-
-testloader = torch.utils.data.DataLoader(testset, batch_size=50, shuffle=False, num_workers=args.num_workers)
-
-
-num_train = len(trainset)
-indices = list(range(num_train))  # 建立所有数据集的索引
-split = int(np.floor(args.train_portion * num_train))  # 数据集分割成两部分，包括训练部分和验证部分
-
 
 train_queue = torch.utils.data.DataLoader(
-      trainset, batch_size=50,
-      sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),  # 自定义取样本的策略，范围为训练部分
-      pin_memory=True,  # 是否拷贝tensors到cuda中的固定内存中
-      num_workers=2)  # 进程数量，0意味着都被load进主进程
+      trainset, batch_size=128, shuffle=True, pin_memory=True, num_workers=2)
 
-valid_queue = torch.utils.data.DataLoader(
-      trainset, batch_size=50,
-      sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[split:num_train]), # 范围为测试部分
-      pin_memory=True, num_workers=2)
+test_queue = torch.utils.data.DataLoader(
+      testset, batch_size=128, shuffle=False, pin_memory=True, num_workers=2)
 
 
 print('==> Building model..')
@@ -119,55 +95,26 @@ image_dim_size = 32
 with open(args.config_path, 'rb') as file:
     params = json.load(file)  # 将json中的对象转换成python中的dict
 
-
 loss_func = nn.CrossEntropyLoss()
 
-
+genotype = parameters.DARTS
 net = CapsModel(image_dim_size,
-                              params,
-                              args.backbone,
-                              args.dp,
-                              args.num_routing,
-                              args.layers,
-                              loss_func,
-                              sequential_routing=args.sequential_routing)
-
-# +
-
-architect = Architect(net, args)
+                params,
+                args.backbone,
+                args.dp,
+                args.num_routing,
+                args.layers,
+                genotype,
+                sequential_routing=args.sequential_routing)
 
 
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
 
-lr_decay = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10, 20], gamma=0.1)
-
-
-# -
-
-def count_parameters(model):
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(name, param.numel())
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-# if not os.path.isdir('results') and not args.debug:
-#     os.mkdir('results')
-# if not args.debug:
-#     store_dir = os.path.join('results')
-#     os.mkdir(store_dir)
+lr_decay = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 200], gamma=0.1)
 
 net = net.to(device)
-net = torch.nn.DataParallel(net, device_ids=[0, 1])
+net = torch.nn.DataParallel(net, device_ids=[2, 3])
 cudnn.benchmark = True
-
-if args.resume_dir and not args.debug:
-    # Load checkpoint.
-    print('==> Resuming from checkpoint..')
-    checkpoint = torch.load(os.path.join(args.resume_dir, 'ckpt.pth'))
-    net.load_state_dict(checkpoint['net'])
-    best_acc = checkpoint['acc']
-    start_epoch = checkpoint['epoch']
-
 
 # Training
 def train(epoch):
@@ -182,14 +129,6 @@ def train(epoch):
         inputs = inputs.to(device)
         targets = targets.to(device)
 
-        input_search, target_search = next(iter(valid_queue))
-
-        input_search = input_search.to(device)
-
-        target_search = target_search.to(device)
-
-        architect.step(input_search, target_search)
-
         optimizer.zero_grad()
 
         v = net(inputs)
@@ -201,6 +140,7 @@ def train(epoch):
         optimizer.step()
 
         train_loss += loss.item()
+
         _, predicted = v.max(dim=1)
 
         total += targets.size(0)
@@ -219,7 +159,7 @@ def test(epoch):
     correct = 0
     total = 0
     with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate(testloader):
+        for batch_idx, (inputs, targets) in enumerate(test_queue):
             inputs = inputs.to(device)
 
             targets = targets.to(device)
@@ -236,20 +176,19 @@ def test(epoch):
 
             correct += predicted.eq(targets).sum().item()
 
-            # progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-            #              % (test_loss / (batch_idx + 1), 100. * correct / total, correct, total))
+            progress_bar(batch_idx, len(test_queue), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
+                         % (test_loss / (batch_idx + 1), 100. * correct / total, correct, total))
 
     # Save checkpoint.
     acc = 100. * correct / total
     logging.info('test acc = %d', acc)
-    if not args.debug:
-        print('Saving..')
-        state = {
+    print('Saving..')
+    state = {
             'net': net.state_dict(),
             'acc': acc,
             'epoch': epoch,
-        }
-        torch.save(state, os.path.join(args.save, 'ckpt.pth'))
+    }
+    torch.save(state, os.path.join(args.save, 'ckpt.pth'))
     return 100. * correct / total
 
 
@@ -258,27 +197,22 @@ results = {
     'args': args,
     'params': params,
     'train_acc': [],
-    # 'test_acc': [],
+    'test_acc': [],
 }
 
-total_epochs = 30
+total_epochs = 350
 
-for epoch in range(start_epoch, start_epoch + total_epochs):
+for epoch in range(total_epochs):
     logging.info('epoch %d', epoch)
+    net.pre = args.dp * epoch / total_epochs
     results['train_acc'].append(train(epoch))
-    genotype = net.module.genotype()
-    logging.info('genotype = %s', genotype)
-    # print(F.softmax(net.module.pre_caps.alphas_normal, dim=-1))
-    # print(F.softmax(net.module.pre_caps.alphas_reduce, dim=-1))
 
     lr_decay.step()
-    # results['test_acc'].append(test(epoch))
+    results['test_acc'].append(test(epoch))
 # -
 
 test(total_epochs)
 
-if not args.debug:
-    store_file = os.path.join(args.save, 'dataset_' + str(args.dataset) + '_num_routing_' + str(args.num_routing) + \
+store_file = os.path.join(args.save, 'dataset_' + str(args.dataset) + '_num_routing_' + str(args.num_routing) + \
                               '_backbone_' + args.backbone + '.dct')
-
-    pickle.dump(results, open(store_file, 'wb'))
+pickle.dump(results, open(store_file, 'wb'))

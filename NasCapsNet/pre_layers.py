@@ -16,7 +16,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-
 from parameters import *
 
 
@@ -35,105 +34,147 @@ class MixedOp(nn.Module):
         return sum(w * op(x) for w, op in zip(weights, self._ops))  # 操作加权和，通过改变权重来实现变量松弛和搜索空间连续化
 
 
-class Cell(nn.Module):
-
-    def __init__(self, genotype, C_prev_prev, C_prev, C, reduction, reduction_prev):
+class Cell(nn.Module):  # 继承父类的_call_和底层forward函数
+    # 一个cell由7个nodes组成，分为两个input nodes，四个intermediate nodes，1个output node
+    def __init__(self, steps, multiplier, C_prev_prev, C_prev, C, reduction, reduction_prev):
         super(Cell, self).__init__()
-        print(C_prev_prev, C_prev, C)
+        self.reduction = reduction
 
+        # 第一个input nodes的结构，取决于前一个细胞是否为reduction，且输入为k-2个细胞的输出，即通道数为C_prev_prev,输出通道为C
         if reduction_prev:
-            self.preprocess0 = FactorizedReduce(C_prev_prev, C)
+            self.preprocess0 = FactorizedReduce(C_prev_prev, C, affine=False)
         else:
-            self.preprocess0 = ReLUConvBN(C_prev_prev, C, 1, 1, 0)
-        self.preprocess1 = ReLUConvBN(C_prev, C, 1, 1, 0)
+            self.preprocess0 = ReLUConvBN(C_prev_prev, C, 1, 1, 0, affine=False)
 
-        if reduction:
-            op_names, indices = zip(*genotype.reduce)
-            concat = genotype.reduce_concat
-        else:
-            op_names, indices = zip(*genotype.normal)
-            concat = genotype.normal_concat
-        self._compile(C, op_names, indices, concat, reduction)
+        # 第二个input结构
+        self.preprocess1 = ReLUConvBN(C_prev, C, 1, 1, 0, affine=False)
+        self._steps = steps
+        self._multiplier = multiplier
 
-    def _compile(self, C, op_names, indices, concat, reduction):
-        assert len(op_names) == len(indices)
-        self._steps = len(op_names) // 2
-        self._concat = concat
-        self.multiplier = len(concat)
+        self._ops = nn.ModuleList()  # 列表的形式存储网络，同一元素共享parameters，不自带forward函数
+        self._bns = nn.ModuleList()
 
-        self._ops = nn.ModuleList()
-        for name, index in zip(op_names, indices):
-            stride = 2 if reduction and index < 2 else 1
-            op = OPS[name](C, stride, True)
-            self._ops += [op]
-        self._indices = indices
+        for i in range(self._steps):  # 遍历四个中间节点，构建混合操作
+            for j in range(2 + i):  # 遍历当前节点i的所有前驱节点，即k-2,k-1cell的输出和i个前驱nodes，共2+i
+                stride = 2 if reduction and j < 2 else 1  # 步幅，reduction cell的前两个为2，其余为1
+                op = MixedOp(C, stride)  # 第i个节点第j个前驱的混合操作类
+                self._ops.append(op)  # ，按照节点编号、前驱节点编号构建模型链表
 
-    def drop_path(self, x, drop_prob):
-        if drop_prob > 0.:
-            keep_prob = 1. - drop_prob
-            mask = Variable(torch.cuda.FloatTensor(x.size(0), 1, 1, 1).bernoulli_(keep_prob))
-            x.div_(keep_prob)
-            x.mul_(mask)
-        return x
+    def forward(self, s0, s1, weights):
+        s0 = self.preprocess0(s0)  # 第一个输入节点操作
+        s1 = self.preprocess1(s1)  # 第二个输入节点操作
 
-    def forward(self, s0, s1, drop_prob):
-        s0 = self.preprocess0(s0)
-        s1 = self.preprocess1(s1)
+        states = [s0, s1]  # 第一个中间节点的前驱节点，即两个输入节点的输出状态
+        offset = 0
+        for i in range(self._steps):  # 遍历中间节点的操作
+            s = sum(self._ops[offset + j](h, weights[offset + j]) for j, h in
+                    enumerate(states))  # for j, h in enumerate(states) 的输出为 j=0, h=s0; j=1, h=s1
+            offset += len(states)  # 偏移量累加
+            states.append(s)  # 前驱节点累加
 
-        states = [s0, s1]
-        for i in range(self._steps):
-            h1 = states[self._indices[2 * i]]
-            h2 = states[self._indices[2 * i + 1]]
-            op1 = self._ops[2 * i]
-            op2 = self._ops[2 * i + 1]
-            h1 = op1(h1)
-            h2 = op2(h2)
-            if self.training and drop_prob > 0.:
-                if not isinstance(op1, Identity):
-                    h1 = self.drop_path(h1, drop_prob)
-                if not isinstance(op2, Identity):
-                    h2 = self.drop_path(h2, drop_prob)
-            s = h1 + h2
-            states += [s]
-        return torch.cat([states[i] for i in self._concat], dim=1)
+        return torch.cat(states[-self._multiplier:],
+                         dim=1)  # 索引L[-a:]表示从length(L)-a 至末尾的部分，此处为四个中间节点的输出状态通过cat操作作为一个cell的最终输出，dim=1使得输出向量拉长，即concat操作，输出通道数变为原先的4倍
 
 
 class NasPreCaps(nn.Module):  # 继承父类nn.Module，主要设计init和上层forward，利用父类内部的_call_和底层forward函数自动搭建网络，调用时传参为上层forward参数
 
-    def __init__(self, C, layers, genotype, dp):
+    def __init__(self, C, layers, steps=4, multiplier=4, stem_multiplier=3):
         super(NasPreCaps, self).__init__()
-        self._layers = layers
-        self.drop_path_prob = dp
+        self._C = C  # 初始通道数
+        self._layers = layers  # 细胞总层数,DARTS为8个cell，即8层
+        self._steps = steps  # cell的中间节点数，即4个中间连接节点状态需要确定
+        self._multiplier = multiplier  # 一个cell的中间节点数，也是扩充通道的倍数
 
-        stem_multiplier = 3
         C_curr = stem_multiplier * C
         self.stem = nn.Sequential(
             nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
-            nn.BatchNorm2d(C_curr)
+            # 参数依次为，输入通道数，输出通道数，卷积核大小(边长或高宽)，stride为滑动步长默认为1，padding为增值为padding_mode的边距大小
+            nn.BatchNorm2d(C_curr)  # C_curr为(N,C,H,W)的C；其中N代表数量，C代表信道channel，H代表高度，W代表宽度
         )
 
-        C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+        C_prev_prev, C_prev, C_curr = C_curr, C_curr, C  # 初始化通道数，第一个cell的k-2,k-1相同
         self.cells = nn.ModuleList()
         reduction_prev = False
         for i in range(layers):
             if i in [layers // 2]:
-                C_curr *= 2
+                C_curr *= 2  # 每过一个reduction cell, 整体网络的通道数*2
                 reduction = True
             else:
                 reduction = False
-            cell = Cell(genotype, C_prev_prev, C_prev, C_curr, reduction, reduction_prev)
+            cell = Cell(steps, multiplier, C_prev_prev, C_prev, C_curr, reduction, reduction_prev)
             reduction_prev = reduction
             self.cells += [cell]
-            C_prev_prev, C_prev = C_prev, cell.multiplier * C_curr
+            C_prev_prev, C_prev = C_prev, multiplier * C_curr  # 每个cell输出将信道扩充4倍
+
+        self._initialize_alphas()  # 架构参数初始化
+
+    def new(self):
+        model_new = NasPreCaps(self._C, self._num_classes, self._layers, self._criterion).cuda()
+        for x, y in zip(model_new.arch_parameters(), self.arch_parameters()):
+            x.data.copy_(y.data)
+        return model_new
 
     def forward(self, input):
-        logits_aux = None
         s0 = s1 = self.stem(input)
         for i, cell in enumerate(self.cells):
-            s0, s1 = s1, cell(s0, s1, self.drop_path_prob)
+            if cell.reduction:
+                weights = F.softmax(self.alphas_reduce, dim=-1)
+            else:
+                weights = F.softmax(self.alphas_normal, dim=-1)
+            s0, s1 = s1, cell(s0, s1, weights)
         out = s1
         return out
 
+    # def _loss(self, input, target):
+    #     logits = self(input)
+    #     return self._criterion(logits, target)
+
+    def _initialize_alphas(self):
+        k = sum(1 for i in range(self._steps) for n in range(2 + i))
+        num_ops = len(PRIMITIVES)
+        # 存储两种cell（是否reduction）中间节点的所有操作对应的权重矩阵
+        self.alphas_normal = Variable(1e-3 * torch.randn(k, num_ops), requires_grad=True)
+        self.alphas_reduce = Variable(1e-3 * torch.randn(k, num_ops), requires_grad=True)
+        self._arch_parameters = [
+            self.alphas_normal,
+            self.alphas_reduce,
+        ]
+
+    def arch_parameters(self):
+        return self._arch_parameters
+
+    def genotype(self):
+
+        def _parse(weights):
+            gene = []
+            n = 2
+            start = 0
+            for i in range(self._steps):
+                end = start + n
+                W = weights[start:end].copy()
+                edges = sorted(range(i + 2),
+                               key=lambda x: -max(W[x][k] for k in range(len(W[x])) if k != PRIMITIVES.index('none')))[
+                        :2]
+                for j in edges:
+                    k_best = None
+                    for k in range(len(W[j])):
+                        if k != PRIMITIVES.index('none'):
+                            if k_best is None or W[j][k] > W[j][k_best]:
+                                k_best = k
+                    gene.append((PRIMITIVES[k_best], j))
+                start = end
+                n += 1
+            return gene
+
+        gene_normal = _parse(F.softmax(self.alphas_normal, dim=-1).data.cpu().numpy())
+        gene_reduce = _parse(F.softmax(self.alphas_reduce, dim=-1).data.cpu().numpy())
+
+        concat = range(2 + self._steps - self._multiplier, self._steps + 2)
+        genotype = Genotype(
+            normal=gene_normal, normal_concat=concat,
+            reduce=gene_reduce, reduce_concat=concat
+        )
+        return genotype
 
 #### Simple Backbone ####
 class simple_backbone(nn.Module):
@@ -219,6 +260,7 @@ class resnet_backbone(nn.Module):
             _make_layer(block=BasicBlock, planes=64, num_blocks=3, stride=1),  # num_blocks=2 or 3, 可以改变内部block数量
             _make_layer(block=BasicBlock, planes=cl_num_filters, num_blocks=4, stride=cl_stride),  # num_blocks=2 or 4
         )
+
 
     def forward(self, x):
         out = self.pre_caps(x)  # x is an image
@@ -459,24 +501,24 @@ class CapsuleCONV(nn.Module):
 
 
 def _concat(xs):
-    return torch.cat([x.view(-1) for x in xs])
+  return torch.cat([x.view(-1) for x in xs])
 
 
 class Architect(object):
 
-    def __init__(self, model, args):
-        self.network_momentum = args.momentum
-        self.weight_decay = args.weight_decay
-        self.model = model
-        self.optimizer = torch.optim.Adam(self.model.pre_caps.arch_parameters(),
-                                          lr=args.arch_learning_rate, betas=(0.5, 0.999),
-                                          weight_decay=args.arch_weight_decay)
+  def __init__(self, model, args):
+    self.network_momentum = args.momentum
+    self.weight_decay = args.weight_decay
+    self.model = model
+    self.optimizer = torch.optim.Adam(self.model.pre_caps.arch_parameters(),
+        lr=args.arch_learning_rate, betas=(0.5, 0.999), weight_decay=args.arch_weight_decay)
 
-    def step(self, input_valid, target_valid):
-        self.optimizer.zero_grad()
-        self._backward_step(input_valid, target_valid)
-        self.optimizer.step()
 
-    def _backward_step(self, input_valid, target_valid):
-        loss = self.model._loss(input_valid, target_valid)
-        loss.backward()
+  def step(self, input_valid, target_valid):
+    self.optimizer.zero_grad()
+    self._backward_step(input_valid, target_valid)
+    self.optimizer.step()
+
+  def _backward_step(self, input_valid, target_valid):
+    loss = self.model._loss(input_valid, target_valid)
+    loss.backward()

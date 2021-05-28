@@ -26,7 +26,7 @@ class CapsModel(nn.Module):
                  dp,
                  num_routing,
                  num_layer,
-                 criterion,
+                 genotype,
                  sequential_routing=True):
 
         super(CapsModel, self).__init__()
@@ -39,7 +39,6 @@ class CapsModel(nn.Module):
         self.pc_output_dim = params['primary_capsules']['out_img_size']
         ## General
         self.num_routing = num_routing  # >3 may cause slow converging
-        self._criterion = criterion
 
         #### Building Networks
         ## Backbone (before capsule)
@@ -54,7 +53,7 @@ class CapsModel(nn.Module):
                                                    params['backbone']['output_dim'],
                                                    params['backbone']['stride'])
         elif backbone == 'nas':
-            self.pre_caps = NasPreCaps(16, num_layer)
+            self.pre_caps = NasPreCaps(16, num_layer, genotype, dp)
 
 
         ## Primary Capsule Layer (a single CNN)
@@ -199,10 +198,6 @@ class CapsModel(nn.Module):
         # out = torch.einsum('bnd, nd->bn', out, self.final_fc) # different classifiers for distinct capsules
 
         return out
-
-    def _loss(self, input, target):
-        logits = self(input)
-        return self._criterion(logits, target)
 
     def genotype(self):
         return self.pre_caps.genotype()

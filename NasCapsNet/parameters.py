@@ -2,20 +2,30 @@ import torch
 import torch.nn as nn
 from collections import namedtuple
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-
 Genotype = namedtuple('Genotype', 'normal normal_concat reduce reduce_concat')
 
+# PRIMITIVES = [
+#     'none',
+#     'max_pool_3x3',
+#     'avg_pool_3x3',
+#     'skip_connect',
+#     'sep_conv_3x3',
+#     'sep_conv_5x5',
+#     'dil_conv_3x3',
+#     'dil_conv_5x5'
+# ]
+
 PRIMITIVES = [
-    'none',
-    'max_pool_3x3',
-    'avg_pool_3x3',
-    'skip_connect',
-    'sep_conv_3x3',
-    'sep_conv_5x5',
-    'dil_conv_3x3',
-    'dil_conv_5x5'
+  'none',
+  'skip_connect',
+  'sep_conv_3x3',
+  'sep_conv_5x5',
+  'sep_conv_7x7',
+  'dil_conv_3x3',
+  'dil_conv_5x5',
+  'conv 1x1',
+  'conv 3x3',
+  'conv_3x1_1x3'
 ]
 
 NASNet = Genotype(
@@ -76,18 +86,13 @@ AmoebaNet = Genotype(
     reduce_concat=[3, 4, 6]
 )
 
-DARTS_V1 = Genotype(
-    normal=[('sep_conv_3x3', 1), ('sep_conv_3x3', 0), ('skip_connect', 0), ('sep_conv_3x3', 1), ('skip_connect', 0),
-            ('sep_conv_3x3', 1), ('sep_conv_3x3', 0), ('skip_connect', 2)], normal_concat=[2, 3, 4, 5],
-    reduce=[('max_pool_3x3', 0), ('max_pool_3x3', 1), ('skip_connect', 2), ('max_pool_3x3', 0), ('max_pool_3x3', 0),
-            ('skip_connect', 2), ('skip_connect', 2), ('avg_pool_3x3', 0)], reduce_concat=[2, 3, 4, 5])
-DARTS_V2 = Genotype(
-    normal=[('sep_conv_3x3', 0), ('sep_conv_3x3', 1), ('sep_conv_3x3', 0), ('sep_conv_3x3', 1), ('sep_conv_3x3', 1),
-            ('skip_connect', 0), ('skip_connect', 0), ('dil_conv_3x3', 2)], normal_concat=[2, 3, 4, 5],
-    reduce=[('max_pool_3x3', 0), ('max_pool_3x3', 1), ('skip_connect', 2), ('max_pool_3x3', 1), ('max_pool_3x3', 0),
-            ('skip_connect', 2), ('skip_connect', 2), ('max_pool_3x3', 1)], reduce_concat=[2, 3, 4, 5])
+genotype_8op_15epoch_FCnet = Genotype(
+    normal=[('sep_conv_3x3', 0), ('sep_conv_3x3', 1), ('sep_conv_3x3', 1), ('sep_conv_3x3', 0), ('sep_conv_3x3', 0),
+            ('max_pool_3x3', 3), ('sep_conv_3x3', 4), ('max_pool_3x3', 3)], normal_concat=range(2, 6),
+    reduce=[('max_pool_3x3', 0), ('sep_conv_5x5', 1), ('max_pool_3x3', 2), ('max_pool_3x3', 0), ('max_pool_3x3', 2),
+            ('max_pool_3x3', 3), ('dil_conv_5x5', 4), ('max_pool_3x3', 2)], reduce_concat=range(2, 6))
 
-DARTS = DARTS_V2
+DARTS = genotype_8op_15epoch_FCnet
 
 OPS = {
     'none': lambda C, stride, affine: Zero(stride),
@@ -105,6 +110,14 @@ OPS = {
         nn.Conv2d(C, C, (7, 1), stride=(stride, 1), padding=(3, 0), bias=False),
         nn.BatchNorm2d(C, affine=affine)
     ),
+    "conv_3x1_1x3" : lambda C, stride, affine: nn.Sequential(
+    nn.ReLU(inplace=False),
+    nn.Conv2d(C, C, (1,3), stride=(1, stride), padding=(0, 1), bias=False),
+    nn.Conv2d(C, C, (3,1), stride=(stride, 1), padding=(1, 0), bias=False),
+    nn.BatchNorm2d(C, affine=affine)
+    ),
+    "conv 1x1" : lambda C, stride, affine: ReLUConvBN(C, C, kernel_size=1, stride=stride, padding=0, affine=affine),
+    "conv 3x3" : lambda C, stride, affine: ReLUConvBN(C, C, kernel_size=3, stride=stride, padding=1, affine=affine),
 }
 
 class ReLUConvBN(nn.Module):
