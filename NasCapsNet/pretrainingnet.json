@@ -18,15 +18,6 @@
         },
     "capsules": [
         {
-            "type" : "FC",
-            "num_caps": 32,
-            "caps_dim": 16,
-            "kernel_size": 3,
-            "stride": 2,
-            "matrix_pose": true,
-            "out_img_size": 7
-        },
-        {
             "type": "FC",
             "num_caps": 32,
             "caps_dim": 16,
